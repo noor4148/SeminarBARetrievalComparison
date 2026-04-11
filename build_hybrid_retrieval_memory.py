@@ -8,7 +8,7 @@ from tqdm import tqdm
 
 from models.GTM import GTM
 from utils.data_multitrends import ZeroShotDataset
-
+from utils.fold_utils import resolve_fold_paths
 
 def load_baseline_model(checkpoint_path, args, cat_dict, col_dict, fab_dict):
     device = torch.device(f"cuda:{args.gpu_num}" if torch.cuda.is_available() else "cpu")
@@ -35,26 +35,20 @@ def load_baseline_model(checkpoint_path, args, cat_dict, col_dict, fab_dict):
     model.eval()
     return model
 
-
-def prepare_metadata(train_csv: Path, test_csv: Path | None, val_frac: float):
+def prepare_metadata(train_csv: Path, query_csv: Path | None = None, query_split: str = "val"):
     train_df = pd.read_csv(train_csv, parse_dates=["release_date"])
     train_df = train_df.sort_values("release_date").reset_index(drop=True)
+    train_df["split"] = "subtrain"
 
-    val_size = max(1, int(val_frac * len(train_df)))
-    subtrain_df = train_df.iloc[:-val_size].copy().reset_index(drop=True)
-    val_df = train_df.iloc[-val_size:].copy().reset_index(drop=True)
-    subtrain_df["split"] = "subtrain"
-    val_df["split"] = "val"
+    dfs = [train_df]
 
-    dfs = [subtrain_df, val_df]
-    if test_csv is not None:
-        test_df = pd.read_csv(test_csv, parse_dates=["release_date"])
-        test_df = test_df.sort_values("release_date").reset_index(drop=True)
-        test_df["split"] = "test"
-        dfs.append(test_df)
+    if query_csv is not None:
+        query_df = pd.read_csv(query_csv, parse_dates=["release_date"])
+        query_df = query_df.sort_values("release_date").reset_index(drop=True)
+        query_df["split"] = query_split
+        dfs.append(query_df)
 
-    combined = pd.concat(dfs, axis=0, ignore_index=True)
-    return combined
+    return pd.concat(dfs, axis=0, ignore_index=True)
 
 
 def extract_embeddings(metadata_df, args, model, img_root, gtrends, cat_dict, col_dict, fab_dict):
@@ -219,7 +213,16 @@ def main(args):
     fab_dict = torch.load(Path(args.data_folder) / "fabric_labels.pt", weights_only=False)
     gtrends = pd.read_csv(Path(args.data_folder) / "gtrends.csv", index_col=[0], parse_dates=True)
 
-    metadata = prepare_metadata(Path(args.train_csv), Path(args.test_csv) if args.test_csv else None, args.val_frac)
+    train_csv, val_csv, _ = resolve_fold_paths(args, need_val=False)
+
+    query_csv = Path(args.query_csv) if args.query_csv else val_csv
+
+    metadata = prepare_metadata(
+        Path(train_csv),
+        Path(query_csv) if query_csv else None,
+        args.query_split,
+    )
+
     print(metadata["split"].value_counts(dropna=False).to_dict())
 
     model = load_baseline_model(args.checkpoint_path, args, cat_dict, col_dict, fab_dict)
@@ -267,14 +270,11 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build the hybrid retrieval memory used by GTM.")
     parser.add_argument("--data_folder", type=str, required=True)
-    parser.add_argument("--train_csv", type=str, required=True)
-    parser.add_argument("--test_csv", type=str, default="")
     parser.add_argument("--checkpoint_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, required=True)
     parser.add_argument("--neighbors_csv", type=str, default="")
     parser.add_argument("--gpu_num", type=int, default=0)
 
-    parser.add_argument("--val_frac", type=float, default=0.15)
     parser.add_argument("--horizon_weeks", type=int, default=12)
     parser.add_argument("--top_k", type=int, default=10)
     parser.add_argument("--min_similarity", type=float, default=0.92)
@@ -290,5 +290,14 @@ if __name__ == "__main__":
     parser.add_argument("--autoregressive", type=int, default=0)
     parser.add_argument("--num_attn_heads", type=int, default=4)
     parser.add_argument("--num_hidden_layers", type=int, default=1)
+
+    # Type of fold
+    parser.add_argument("--fold", type=int, choices=[1, 2, 3, 4, 5], default=None)
+    parser.add_argument("--split_dir", type=str, default="")
+    parser.add_argument("--train_csv", type=str, default="")
+    parser.add_argument("--val_csv", type=str, default="")
+    parser.add_argument("--eval_csv", type=str, default="")
+    parser.add_argument("--query_csv", type=str, default="")
+    parser.add_argument("--query_split", type=str, choices=["val", "test"], default="val")
 
     main(parser.parse_args())

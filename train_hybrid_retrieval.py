@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from models.GTM_hybrid_retrieval import HybridRetrievalGTM
 from utils.data_multitrends import ZeroShotDataset
+from utils.fold_utils import resolve_fold_paths, read_sorted_csv, fold_suffix
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -64,11 +65,16 @@ def run(args):
     print(args)
     pl.seed_everything(args.seed)
 
-    train_df = pd.read_csv(Path(args.data_folder) / "train.csv", parse_dates=["release_date"])
-    train_df = train_df.sort_values("release_date").reset_index(drop=True)
-    val_size = max(1, int(args.val_frac * len(train_df)))
-    subtrain_df = train_df.iloc[:-val_size].copy().reset_index(drop=True)
-    val_df = train_df.iloc[-val_size:].copy().reset_index(drop=True)
+    train_csv, val_csv, _ = resolve_fold_paths(args, need_val=False)
+
+    train_df = read_sorted_csv(train_csv)
+
+    if val_csv is not None:
+        val_df = read_sorted_csv(val_csv)
+    else:
+        val_size = max(1, int(args.val_frac * len(train_df)))
+        val_df = train_df.iloc[-val_size:].copy().reset_index(drop=True)
+        train_df = train_df.iloc[:-val_size].copy().reset_index(drop=True)
 
     cat_dict = torch.load(Path(args.data_folder) / "category_labels.pt", weights_only=False)
     col_dict = torch.load(Path(args.data_folder) / "color_labels.pt", weights_only=False)
@@ -77,14 +83,17 @@ def run(args):
     retrieval_memory = torch.load(args.retrieval_memory_path, map_location="cpu", weights_only=False)
 
     img_root = Path(args.data_folder) / "images"
+
     train_loader = build_loader_with_retrieval(
-        subtrain_df, img_root, gtrends, cat_dict, col_dict, fab_dict,
+        train_df, img_root, gtrends, cat_dict, col_dict, fab_dict,
         args.trend_len, retrieval_memory, args.batch_size, train=True,
     )
+
     val_loader = build_loader_with_retrieval(
         val_df, img_root, gtrends, cat_dict, col_dict, fab_dict,
         args.trend_len, retrieval_memory, batch_size=1, train=False,
     )
+    model_savename = f"GTM_hybrid_{args.run_name}_{fold_suffix(args)}"
 
     model = HybridRetrievalGTM(
         embedding_dim=args.embedding_dim,
@@ -106,7 +115,6 @@ def run(args):
     )
 
     dt_string = datetime.now().strftime("%d-%m-%Y-%H-%M-%S")
-    model_savename = "GTM_hybrid_" + args.run_name
 
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         dirpath=Path(args.log_dir) / "GTM_hybrid",
@@ -159,5 +167,12 @@ if __name__ == "__main__":
     parser.add_argument("--num_attn_heads", type=int, default=4)
     parser.add_argument("--num_hidden_layers", type=int, default=1)
     parser.add_argument("--run_name", type=str, default="Run1")
+
+    # to decide which fold to use
+    parser.add_argument("--fold", type=int, default=None)
+    parser.add_argument("--split_dir", type=str, default="")
+    parser.add_argument("--train_csv", type=str, default="")
+    parser.add_argument("--val_csv", type=str, default="")
+    parser.add_argument("--eval_csv", type=str, default="")
 
     run(parser.parse_args())
