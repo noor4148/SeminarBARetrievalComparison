@@ -10,6 +10,7 @@ from models.GTM import GTM
 from utils.data_multitrends import ZeroShotDataset
 from utils.fold_utils import resolve_fold_paths
 
+
 def load_baseline_model(checkpoint_path, args, cat_dict, col_dict, fab_dict):
     device = torch.device(f"cuda:{args.gpu_num}" if torch.cuda.is_available() else "cpu")
     model = GTM(
@@ -35,20 +36,40 @@ def load_baseline_model(checkpoint_path, args, cat_dict, col_dict, fab_dict):
     model.eval()
     return model
 
-def prepare_metadata(train_csv: Path, query_csv: Path | None = None, query_split: str = "val"):
+
+def prepare_metadata(train_csv: Path, val_csv: Path, test_csv: Path | None):
     train_df = pd.read_csv(train_csv, parse_dates=["release_date"])
     train_df = train_df.sort_values("release_date").reset_index(drop=True)
     train_df["split"] = "subtrain"
 
-    dfs = [train_df]
+    val_df = pd.read_csv(val_csv, parse_dates=["release_date"])
+    val_df = val_df.sort_values("release_date").reset_index(drop=True)
+    val_df["split"] = "val"
 
-    if query_csv is not None:
-        query_df = pd.read_csv(query_csv, parse_dates=["release_date"])
-        query_df = query_df.sort_values("release_date").reset_index(drop=True)
-        query_df["split"] = query_split
-        dfs.append(query_df)
+    dfs = [train_df, val_df]
+
+    if test_csv is not None:
+        test_df = pd.read_csv(test_csv, parse_dates=["release_date"])
+        test_df = test_df.sort_values("release_date").reset_index(drop=True)
+        test_df["split"] = "test"
+        dfs.append(test_df)
 
     return pd.concat(dfs, axis=0, ignore_index=True)
+
+
+def resolve_build_memory_paths(args):
+    train_csv, val_csv, _ = resolve_fold_paths(args, need_val=True)
+
+    test_csv = Path(args.test_csv) if args.test_csv else Path(args.data_folder) / "test.csv"
+
+    if not Path(train_csv).exists():
+        raise FileNotFoundError(f"Could not find train split file: {train_csv}")
+    if val_csv is None or not Path(val_csv).exists():
+        raise FileNotFoundError(f"Could not find validation split file: {val_csv}")
+    if test_csv is not None and not Path(test_csv).exists():
+        raise FileNotFoundError(f"Could not find test split file: {test_csv}")
+
+    return Path(train_csv), Path(val_csv), Path(test_csv)
 
 
 def extract_embeddings(metadata_df, args, model, img_root, gtrends, cat_dict, col_dict, fab_dict):
@@ -85,7 +106,10 @@ def build_admissibility_mask(metadata: pd.DataFrame, horizon_weeks: int) -> torc
 
     temporal_mask = (d_j + horizon) <= d_i
     subtrain_mask = (metadata["split"].values == "subtrain")[None, :]
-    same_code_mask = metadata["external_code"].astype(str).values[:, None] == metadata["external_code"].astype(str).values[None, :]
+    same_code_mask = (
+        metadata["external_code"].astype(str).values[:, None]
+        == metadata["external_code"].astype(str).values[None, :]
+    )
 
     admissible = temporal_mask & subtrain_mask & (~same_code_mask)
     return torch.from_numpy(admissible)
@@ -213,16 +237,12 @@ def main(args):
     fab_dict = torch.load(Path(args.data_folder) / "fabric_labels.pt", weights_only=False)
     gtrends = pd.read_csv(Path(args.data_folder) / "gtrends.csv", index_col=[0], parse_dates=True)
 
-    train_csv, val_csv, _ = resolve_fold_paths(args, need_val=False)
+    train_csv, val_csv, test_csv = resolve_build_memory_paths(args)
 
-    query_csv = Path(args.query_csv) if args.query_csv else val_csv
-
-    metadata = prepare_metadata(
-        Path(train_csv),
-        Path(query_csv) if query_csv else None,
-        args.query_split,
-    )
-
+    metadata = prepare_metadata(train_csv, val_csv, test_csv)
+    print(f"Using train_csv={train_csv}")
+    print(f"Using val_csv={val_csv}")
+    print(f"Using test_csv={test_csv}")
     print(metadata["split"].value_counts(dropna=False).to_dict())
 
     model = load_baseline_model(args.checkpoint_path, args, cat_dict, col_dict, fab_dict)
@@ -250,9 +270,10 @@ def main(args):
         "embeddings": embeddings,
         "top_k": int(min(args.top_k, max(1, len(metadata) - 1))),
         "horizon_weeks": int(args.horizon_weeks),
-        "min_similarity": float(args.min_similarity),
+        "min_similarity": float(args.min_similarity) if args.min_similarity is not None else None,
         **retrieval_output,
     }
+
     Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
     torch.save(output, args.output_path)
     print(f"Saved retrieval memory to {args.output_path}")
@@ -291,13 +312,12 @@ if __name__ == "__main__":
     parser.add_argument("--num_attn_heads", type=int, default=4)
     parser.add_argument("--num_hidden_layers", type=int, default=1)
 
-    # Type of fold
+    # fold / split arguments
     parser.add_argument("--fold", type=int, choices=[1, 2, 3, 4, 5], default=None)
     parser.add_argument("--split_dir", type=str, default="")
     parser.add_argument("--train_csv", type=str, default="")
     parser.add_argument("--val_csv", type=str, default="")
-    parser.add_argument("--eval_csv", type=str, default="")
-    parser.add_argument("--query_csv", type=str, default="")
-    parser.add_argument("--query_split", type=str, choices=["val", "test"], default="val")
+    parser.add_argument("--eval_csv", type=str, default="")  # alleen voor compatibiliteit met resolve_fold_paths
+    parser.add_argument("--test_csv", type=str, default="")
 
     main(parser.parse_args())
