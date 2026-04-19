@@ -291,14 +291,14 @@ class TransformerDecoderLayer(nn.Module):
     def forward(self, tgt, memory, tgt_mask = None, memory_mask = None, tgt_key_padding_mask = None, 
             memory_key_padding_mask = None, **kwargs):
 
-        tgt2, attn_weights = self.multihead_attn(tgt, memory, memory)
-        #tgt2, attn_weights = self.multihead_attn(
-            #tgt,
-            #memory,
-            #memory,
-            #attn_mask=memory_mask,
-            #key_padding_mask=memory_key_padding_mask,
-        #)
+        #tgt2, attn_weights = self.multihead_attn(tgt, memory, memory)
+        tgt2, attn_weights = self.multihead_attn(
+            tgt,
+            memory,
+            memory,
+            attn_mask=memory_mask,
+            key_padding_mask=memory_key_padding_mask,
+        )
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
         tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt))))
