@@ -54,9 +54,8 @@ In the earlier setup, retrieval memory was built from a single `train.csv` that 
 
 - a training split,
 - a validation split,
-- and optionally a test split.
 
-This matters because retrieval candidates are still restricted to the subtrain rows, while the combined metadata can include validation and test rows as query items. That makes the retrieval-memory generation consistent with fold-based experiments.
+This matters because retrieval candidates are still restricted to the subtrain rows. That makes the retrieval-memory generation consistent with fold-based experiments.
 
 ## Typical usage differences
 
